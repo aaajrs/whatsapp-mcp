@@ -69,3 +69,19 @@ for (const [name, fields, error] of [
   await assert.rejects(run({m,d:async()=>{called=true;return bytes}}), new RegExp(error));
   assert.equal(called,false);
 });
+
+for (const kind of ['imageMessage','documentMessage']) test(`ordinary transport sidecar permits ${kind} through protobuf`,async()=>{
+ const m=raw(); const data=kind==='imageMessage'?bytes:Uint8Array.from([37,80,68,70,45]);
+ const media={...m.message.imageMessage,mimetype:kind==='imageMessage'?'image/png':'application/pdf',fileLength:data.length};
+ m.message={[kind]:media,messageContextInfo:{deviceListMetadataVersion:2,messageSecret:new Uint8Array(32).fill(9)}};
+ const out=await run({m:archived(m),d:async()=>data});assert.deepEqual(out.data,data);
+ assert.equal(JSON.stringify({...out,data:undefined}).includes('messageSecret'),false);
+});
+for(const sidecar of [{messageAddOnDurationInSecs:0},{messageAddOnExpiryType:0},{limitSharing:{}},{limitSharingV2:{}},{unknownField:true},[],true,'context'])test(`reject unsafe sidecar ${JSON.stringify(sidecar)}`,async()=>{
+ const m=raw();m.message.messageContextInfo=sidecar;let called=false;
+ await assert.rejects(run({m,d:async()=>{called=true;return bytes}}),/UNSUPPORTED_MESSAGE/);assert.equal(called,false);
+});
+test('normal sidecar does not bypass view once',async()=>{
+ const m=raw();m.message.messageContextInfo={deviceListMetadataVersion:2};m.message.imageMessage.viewOnce=true;
+ let called=false;await assert.rejects(run({m,d:async()=>{called=true;return bytes}}),/VIEW_ONCE/);assert.equal(called,false);
+});
