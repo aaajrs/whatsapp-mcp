@@ -79,6 +79,83 @@ export function mediaIdentityDiagnostics(
   }
 }
 
+// Fixed boolean shape flags only. Do not echo field names or sidecar values.
+export function mediaShapeDiagnostics(content: Content): Record<string, boolean> {
+  const fields = Object.keys(content).filter((key) => content[key] != null)
+  const has = (key: string) => fields.includes(key)
+  const context = content.messageContextInfo
+  const contextFields = object(context)
+    ? Object.keys(context).filter((key) => context[key] != null)
+    : []
+  const directMedia = content.imageMessage ?? content.documentMessage
+  const mediaContext = object(directMedia) ? directMedia.contextInfo : null
+  const wrappers = [
+    "ephemeralMessage",
+    "viewOnceMessage",
+    "viewOnceMessageV2",
+    "viewOnceMessageV2Extension",
+    "documentWithCaptionMessage",
+    "editedMessage",
+    "deviceSentMessage",
+  ]
+  return {
+    hasNoFields: fields.length === 0,
+    hasMultipleFields: fields.length > 1,
+    hasImage: has("imageMessage"),
+    hasDocument: has("documentMessage"),
+    hasMessageContextInfo: has("messageContextInfo"),
+    directMediaPlusContextOnly:
+      fields.length === 2 &&
+      has("messageContextInfo") &&
+      (has("imageMessage") || has("documentMessage")),
+    hasEphemeralWrapper: has("ephemeralMessage"),
+    hasViewOnceWrapper: wrappers.slice(1, 4).some(has),
+    hasDocumentCaptionWrapper: has("documentWithCaptionMessage"),
+    hasEditedWrapper: has("editedMessage"),
+    hasDeviceSentWrapper: has("deviceSentMessage"),
+    hasOtherField: fields.some(
+      (key) =>
+        !["imageMessage", "documentMessage", "messageContextInfo", ...wrappers].includes(key),
+    ),
+    directMediaIsObject: object(directMedia),
+    directMediaViewOnce: object(directMedia) && directMedia.viewOnce === true,
+    directMediaContextHasExpiry:
+      object(mediaContext) &&
+      (mediaContext.expiration != null || mediaContext.ephemeralSettingTimestamp != null),
+    directMediaSupportedMime:
+      object(directMedia) &&
+      ["image/jpeg", "image/png", "application/pdf"].includes(String(directMedia.mimetype)),
+    directMediaDownloadMetadataPresent:
+      object(directMedia) &&
+      typeof directMedia.directPath === "string" &&
+      Boolean(directMedia.directPath) &&
+      directMedia.mediaKey instanceof Uint8Array &&
+      directMedia.fileSha256 instanceof Uint8Array &&
+      directMedia.fileEncSha256 instanceof Uint8Array,
+    contextIsObject: object(context),
+    contextHasExpiry: contextFields.some((key) =>
+      ["messageAddOnDurationInSecs", "messageAddOnExpiryType"].includes(key),
+    ),
+    contextHasSharingRestriction: contextFields.some((key) =>
+      ["limitSharing", "limitSharingV2"].includes(key),
+    ),
+    contextHasOtherMetadata: contextFields.some(
+      (key) =>
+        ![
+          "deviceListMetadata",
+          "deviceListMetadataVersion",
+          "messageSecret",
+          "paddingBytes",
+          "reportingTokenVersion",
+          "messageAddOnDurationInSecs",
+          "messageAddOnExpiryType",
+          "limitSharing",
+          "limitSharingV2",
+        ].includes(key),
+    ),
+  }
+}
+
 // Dependency injection lets safety tests run without WhatsApp or private files.
 export async function readScopedMedia(
   policy: MediaPolicy | null,
@@ -139,7 +216,7 @@ export async function readScopedMedia(
   // Fail closed on wrappers, including view-once, ephemeral, edits and albums.
   const kinds = Object.keys(content).filter((k) => content[k] != null)
   if (kinds.length !== 1 || !["imageMessage", "documentMessage"].includes(kinds[0]!))
-    fail("UNSUPPORTED_MESSAGE")
+    fail(`UNSUPPORTED_MESSAGE ${JSON.stringify(mediaShapeDiagnostics(content))}`)
   const media = content[kinds[0]!]
   if (!object(media)) fail("MEDIA_UNAVAILABLE")
   if (media.viewOnce === true) fail("VIEW_ONCE")
