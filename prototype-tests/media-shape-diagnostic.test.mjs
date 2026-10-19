@@ -15,7 +15,7 @@ async function denied(message,flag){
   return true;
  });assert.equal(downloaded,false);
 }
-test('real protobuf direct image plus normal metadata reproduces unsupported count',()=>denied({imageMessage:media,messageContextInfo:{deviceListMetadataVersion:2,messageSecret:new Uint8Array(32).fill(9)}},'directMediaPlusContextOnly'));
+test('real protobuf direct image plus normal metadata is distinguished',()=>assert.equal(mediaShapeDiagnostics(archive({imageMessage:media,messageContextInfo:{deviceListMetadataVersion:2,messageSecret:new Uint8Array(32).fill(9)}}).message).directMediaPlusContextOnly,true));
 test('real protobuf context expiry is distinguished without accepting it',()=>denied({imageMessage:media,messageContextInfo:{messageAddOnDurationInSecs:10}},'contextHasExpiry'));
 test('real protobuf sharing restriction distinguished without accepting it',()=>denied({imageMessage:media,messageContextInfo:{limitSharing:{}}},'contextHasSharingRestriction'));
 for(const [wrapper,flag] of [['ephemeralMessage','hasEphemeralWrapper'],['viewOnceMessage','hasViewOnceWrapper'],['viewOnceMessageV2','hasViewOnceWrapper'],['viewOnceMessageV2Extension','hasViewOnceWrapper'],['documentWithCaptionMessage','hasDocumentCaptionWrapper'],['editedMessage','hasEditedWrapper'],['deviceSentMessage','hasDeviceSentWrapper']])test(`real protobuf ${wrapper} stays denied`,()=>denied({[wrapper]:{message:{imageMessage:media}}},flag));
