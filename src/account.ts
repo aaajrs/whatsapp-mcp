@@ -28,6 +28,9 @@ import type { Identity } from "./store/names"
 import { fetchWaWebVersion } from "./wa-version"
 import { type ContactName, removeContact, resolveAddress, saveContact } from "./whatsapp/contacts"
 import { decodeRaw, type KeyedMessage } from "./whatsapp/raw"
+import { readScopedMedia } from "./whatsapp/media-read"
+import { parseMediaPolicy } from "./whatsapp/media-policy"
+import { reserveMediaAttempt } from "./whatsapp/media-budget"
 import { makeSocket, type Socket } from "./whatsapp/socket"
 import { refreshGroupNames, syncArchive } from "./whatsapp/sync"
 import "./wasm"
@@ -175,6 +178,51 @@ export class WhatsAppAccount extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     if (await this.ctx.storage.get<boolean>(WANTS_CONNECTION)) await this.keepAlive()
+  }
+
+  // No access until a valid, approved private runtime policy is configured.
+  private mediaReadInFlight = false
+
+  async readMessageMedia(chat: string, messageId: string) {
+    const policy = parseMediaPolicy(this.env.MEDIA_POLICY_JSON)
+    if (!policy) throw new Error("MEDIA_DISABLED")
+    if (this.mediaReadInFlight) throw new Error("MEDIA_BUSY")
+    this.mediaReadInFlight = true
+    try {
+      const jid = this.resolveChat(chat)
+      if (jid !== policy.groupJid) throw new Error("OUT_OF_SCOPE")
+      const record = this.archive.getMessage(jid, messageId)
+      if (!record || record.deleted || !record.fromMe) throw new Error("MEDIA_UNAVAILABLE")
+      const raw = this.rawMessage(jid, messageId)
+      const result = await readScopedMedia(
+        policy,
+        { chat: jid, message_id: messageId },
+        record,
+        raw,
+        async (directPath, maxEncryptedBytes) => {
+          reserveMediaAttempt(this.ctx.storage)
+          const socket = this.connectedSocket()
+          return socket.withBoundedMedia(
+            directPath,
+            maxEncryptedBytes,
+            async () => new Uint8Array(await socket.downloadMedia(raw, "buffer", {})),
+          )
+        },
+        () => this.archive.getMessage(jid, messageId),
+      )
+      let binary = ""
+      for (const byte of result.data) binary += String.fromCharCode(byte)
+      return {
+        chat: result.chat,
+        message_id: result.message_id,
+        mimetype: result.mimetype,
+        source: result.source,
+        bytes: result.data.byteLength,
+        base64: btoa(binary),
+      }
+    } finally {
+      this.mediaReadInFlight = false
+    }
   }
 
   listChats(query: ChatListQuery): ChatSummary[] {
@@ -365,7 +413,10 @@ export class WhatsAppAccount extends DurableObject<Env> {
       fetchWaWebVersion(),
     ])
     // The socket connects on creation; progress arrives as `connection.update`.
-    const socket = makeSocket({ auth, version })
+    const socket = makeSocket(
+      { auth, version },
+      parseMediaPolicy(this.env.MEDIA_POLICY_JSON) !== null,
+    )
     socket.ev.on("connection.update", (update) => this.onConnectionUpdate(update))
     syncArchive(socket, this.archive, {
       onMessages: (messages, source) => {
