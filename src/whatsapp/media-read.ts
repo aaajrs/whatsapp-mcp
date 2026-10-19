@@ -1,3 +1,5 @@
+import { jidNormalizedUser } from "@oxidezap/baileyrs/lib/WABinary/jid-utils.js"
+
 // Policy is loaded only from the optional private Worker runtime binding.
 export interface MediaPolicy {
   groupJid: string
@@ -45,6 +47,38 @@ function fail(code: string): never {
 }
 const object = (x: unknown): x is Content => x !== null && typeof x === "object"
 
+// Fixed boolean-only output after archive scope checks; never serialize raw keys,
+// identifiers, media fields or arbitrary exception text. Normalization is
+// diagnostic only and DOES NOT change the exact identity acceptance checks.
+export function mediaIdentityDiagnostics(
+  policy: MediaPolicy,
+  requested: { chat: string; message_id: string },
+  raw: MediaEnvelope | null,
+): Record<string, boolean> {
+  const key = raw?.key
+  const keyAuthor = key?.participant
+  const envelopeAuthor = raw?.participant
+  return {
+    keyPresent: key != null,
+    chatMatches: key?.remoteJid === requested.chat,
+    idMatches: key?.id === requested.message_id,
+    fromMePresent: key?.fromMe != null,
+    fromMeTrue: key?.fromMe === true,
+    keyParticipantPresent: Boolean(keyAuthor),
+    keyParticipantMatches: Boolean(keyAuthor && policy.ownerJids.includes(keyAuthor)),
+    keyParticipantNormalizedMatches: Boolean(
+      keyAuthor && policy.ownerJids.includes(jidNormalizedUser(keyAuthor)),
+    ),
+    envelopeParticipantPresent: Boolean(envelopeAuthor),
+    envelopeParticipantMatches: Boolean(
+      envelopeAuthor && policy.ownerJids.includes(envelopeAuthor),
+    ),
+    envelopeParticipantNormalizedMatches: Boolean(
+      envelopeAuthor && policy.ownerJids.includes(jidNormalizedUser(envelopeAuthor)),
+    ),
+  }
+}
+
 // Dependency injection lets safety tests run without WhatsApp or private files.
 export async function readScopedMedia(
   policy: MediaPolicy | null,
@@ -81,9 +115,10 @@ export async function readScopedMedia(
     raw.key.id !== requested.message_id ||
     raw.key.fromMe !== true
   )
-    fail("IDENTITY_MISMATCH")
+    fail(`IDENTITY_MISMATCH ${JSON.stringify(mediaIdentityDiagnostics(policy, requested, raw))}`)
   for (const author of [raw.key.participant, raw.participant]) {
-    if (author && !policy.ownerJids.includes(author)) fail("IDENTITY_MISMATCH")
+    if (author && !policy.ownerJids.includes(author))
+      fail(`IDENTITY_MISMATCH ${JSON.stringify(mediaIdentityDiagnostics(policy, requested, raw))}`)
   }
   // Check the outer WebMessageInfo, not only the nested media context. These
   // fields survive archive protobuf encoding independently of contextInfo.
