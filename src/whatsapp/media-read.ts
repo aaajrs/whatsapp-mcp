@@ -214,8 +214,19 @@ export async function readScopedMedia(
   const content = raw.message
   if (!object(content)) fail("MEDIA_UNAVAILABLE")
   // Fail closed on wrappers, including view-once, ephemeral, edits and albums.
-  const kinds = Object.keys(content).filter((k) => content[k] != null)
-  if (kinds.length !== 1 || !["imageMessage", "documentMessage"].includes(kinds[0]!))
+  const fields = Object.keys(content).filter((k) => content[k] != null)
+  const kinds = fields.filter((k) => k !== "messageContextInfo")
+  const sidecar = content.messageContextInfo
+  const safeSidecar = sidecar == null || (
+    object(sidecar) && !Array.isArray(sidecar) &&
+    Object.keys(sidecar).filter((k) => sidecar[k] != null).every((k) => [
+      "deviceListMetadata", "deviceListMetadataVersion", "messageSecret",
+      "paddingBytes", "reportingTokenVersion",
+    ].includes(k))
+  )
+  // Ordinary transport context is not a content wrapper. Unknown, expiry and
+  // sharing-restriction fields remain rejected; no unwrapping or policy change.
+  if (!safeSidecar || kinds.length !== 1 || !["imageMessage", "documentMessage"].includes(kinds[0]!))
     fail(`UNSUPPORTED_MESSAGE ${JSON.stringify(mediaShapeDiagnostics(content))}`)
   const media = content[kinds[0]!]
   if (!object(media)) fail("MEDIA_UNAVAILABLE")
