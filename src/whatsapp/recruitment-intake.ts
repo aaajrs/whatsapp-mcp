@@ -14,12 +14,16 @@ type IntakePolicy = {
   expiresAt: number
   maxEvents: number
 }
-type IntakeStorage = {
+export type IntakeStorage = {
   sql: {
     exec(query: string, ...bindings: (string | number | null)[]): Iterable<Record<string, unknown>>
   }
   transactionSync<T>(callback: () => T): T
 }
+export type IntakeTransport = (
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+) => ReturnType<typeof fetch>
 
 export function parseIntakePolicy(raw: unknown): IntakePolicy | null {
   if (typeof raw !== "string" || raw.length > 2048) return null
@@ -28,7 +32,8 @@ export function parseIntakePolicy(raw: unknown): IntakePolicy | null {
     if (
       !p ||
       Array.isArray(p) ||
-      Object.keys(p).toSorted().join(",") !== "enabled,endpoint,expiresAt,maxEvents,notBefore,ownerJids"
+      Object.keys(p).toSorted().join(",") !==
+        "enabled,endpoint,expiresAt,maxEvents,notBefore,ownerJids"
     )
       return null
     if (
@@ -186,7 +191,8 @@ export async function captureRecruitmentIntake(
   source: "live" | "history",
   accountJid: string | null,
   now = Math.floor(Date.now() / 1000),
-  transport: typeof fetch = fetch,
+  transport: IntakeTransport = fetch,
+  onAccepted?: (event: ReturnType<typeof intakeEvents>[number]) => Promise<void>,
 ): Promise<string[]> {
   const p = parseIntakePolicy(raw)
   if (!p) return ["disabled"]
@@ -263,6 +269,15 @@ export async function captureRecruitmentIntake(
       key,
     )
     results.push(status)
+    // Notify only after the review-only inbox has durably acknowledged this pointer.
+    // Notification failure must never turn the intake into a second n8n delivery.
+    if (status === "acknowledged" && onAccepted) {
+      try {
+        await onAccepted(event)
+      } catch {
+        /* The pointer remains in the review inbox. */
+      }
+    }
   }
   return results
 }

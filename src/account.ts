@@ -33,6 +33,8 @@ import { parseMediaPolicy } from "./whatsapp/media-policy"
 import { reserveMediaAttempt } from "./whatsapp/media-budget"
 import { captureRecruitmentTest } from "./whatsapp/recruitment-test"
 import { captureRecruitmentIntake } from "./whatsapp/recruitment-intake"
+import { RecruitmentEvents, EventError, type EventAuthority } from "./mcp/recruitment-events"
+import { recruitmentEventAccess } from "./auth/oauth"
 import { makeSocket, type Socket } from "./whatsapp/socket"
 import { refreshGroupNames, syncArchive } from "./whatsapp/sync"
 import "./wasm"
@@ -128,6 +130,14 @@ async function digest(parts: readonly string[]): Promise<string> {
 export class WhatsAppAccount extends DurableObject<Env> {
   private readonly store = durableKvStore(this.ctx.storage)
   private readonly archive = new Archive(this.ctx.storage)
+  private readonly recruitmentEvents = new RecruitmentEvents(this.ctx.storage, {
+    runtime: () => ({
+      rawPolicy: this.env.RECRUITMENT_INTAKE_POLICY_JSON,
+      accountJid: this.status().me,
+      connected: this.state === "open",
+    }),
+    authorized: (authority) => recruitmentEventAccess(this.env, authority),
+  })
   private socket: Socket | null = null
   private opening: Promise<void> | null = null
   private state: ConnectionState = "idle"
@@ -180,6 +190,32 @@ export class WhatsAppAccount extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     if (await this.ctx.storage.get<boolean>(WANTS_CONNECTION)) await this.keepAlive()
+    await this.recruitmentEvents.flush().catch(() => {
+      console.warn("recruitment notification retry unavailable")
+    })
+  }
+
+  async recruitmentEventRequest(method: string, authority: EventAuthority, params: unknown) {
+    try {
+      if (method === "events/subscribe")
+        return { ok: true, result: await this.recruitmentEvents.subscribe(authority, params) }
+      if (method === "events/unsubscribe")
+        return { ok: true, result: await this.recruitmentEvents.unsubscribe(authority, params) }
+      if (method === "test")
+        return { ok: true, result: await this.recruitmentEvents.test(authority) }
+      if (method === "status") return { ok: true, result: this.recruitmentEvents.status() }
+      throw new EventError(-32601, "unknown_method")
+    } catch (error) {
+      return {
+        ok: false,
+        code: error instanceof EventError ? error.code : -32015,
+        reason: error instanceof EventError ? error.reason : "request_failed",
+      }
+    }
+  }
+
+  recruitmentNotificationStatus() {
+    return this.recruitmentEvents.status()
   }
 
   // No access until a valid, approved private runtime policy is configured.
@@ -431,6 +467,12 @@ export class WhatsAppAccount extends DurableObject<Env> {
               messages,
               source,
               socket.user?.id ? jidNormalizedUser(socket.user.id) : null,
+              undefined,
+              undefined,
+              async (event) => {
+                await this.recruitmentEvents.enqueue(event)
+                await this.recruitmentEvents.flush()
+              },
             ).catch(() => {
               console.warn("recruitment intake unavailable")
             }),
