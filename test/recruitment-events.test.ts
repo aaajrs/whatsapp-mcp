@@ -127,7 +127,7 @@ test("verification precedes activation; repeated subscribe is deterministic and 
   expect(a.id).toBe(b.id)
   expect(f.calls).toHaveLength(1)
   expect(f.calls[0]!.body.type).toBe("verification")
-  expect(f.calls[0]!.options.redirect).toBe("error")
+  expect(f.calls[0]!.options.redirect).toBe("manual")
   expect(f.service.status().subscriptions[0]?.active).toBe(true)
   expect(JSON.stringify(f.service.status())).not.toContain(secret)
   expect(JSON.stringify(f.service.status())).not.toContain(params.delivery.url)
@@ -387,4 +387,30 @@ test("status distinguishes successful verification followed by unsubscribe", asy
   expect(sub.active).toBe(false)
   expect(sub.verification_error).toBeNull()
   expect(sub.unsubscribed_at).not.toBeNull()
+})
+
+test("ambient Worker fetch retains its receiver and uses supported no-follow mode", async () => {
+  const f = fixture()
+  const saved = globalThis.fetch
+  let calls = 0
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    writable: true,
+    value: async function (this: unknown, url: string, init: RequestInit) {
+      if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation")
+      if (init.redirect !== "manual") throw new TypeError("Unsupported redirect mode")
+      calls++
+      return f.deps.transport(url, init)
+    },
+  })
+  try {
+    const service = new RecruitmentEvents(f.storage, { ...f.deps, transport: undefined })
+    await service.subscribe(authority, params)
+    await service.test(authority)
+    expect(service.status().subscriptions[0]!.active).toBe(true)
+    expect(service.status().delivery_counts.accepted).toBe(1)
+    expect(calls).toBe(2)
+  } finally {
+    globalThis.fetch = saved
+  }
 })
