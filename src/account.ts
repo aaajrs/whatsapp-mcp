@@ -31,6 +31,7 @@ import { decodeRaw, type KeyedMessage } from "./whatsapp/raw"
 import { readScopedMedia } from "./whatsapp/media-read"
 import { parseMediaPolicy } from "./whatsapp/media-policy"
 import { reserveMediaAttempt } from "./whatsapp/media-budget"
+import { captureRecruitmentTest } from "./whatsapp/recruitment-test"
 import { makeSocket, type Socket } from "./whatsapp/socket"
 import { refreshGroupNames, syncArchive } from "./whatsapp/sync"
 import "./wasm"
@@ -420,6 +421,20 @@ export class WhatsAppAccount extends DurableObject<Env> {
     socket.ev.on("connection.update", (update) => this.onConnectionUpdate(update))
     syncArchive(socket, this.archive, {
       onMessages: (messages, source) => {
+        if (source === "live" && this.env.RECRUITMENT_TEST_POLICY_JSON) {
+          this.ctx.waitUntil(
+            captureRecruitmentTest(
+              this.ctx.storage,
+              this.env.RECRUITMENT_TEST_POLICY_JSON,
+              this.env.RECRUITMENT_WEBHOOK_TOKEN,
+              messages,
+              source,
+              socket.user?.id ? jidNormalizedUser(socket.user.id) : null,
+            ).catch(() => {
+              console.warn("recruitment test capture unavailable")
+            }),
+          )
+        }
         if (source !== "history") return
         for (const chat of new Set(messages.map((message) => message.chatJid))) {
           this.historyWaiters.get(chat)?.()
