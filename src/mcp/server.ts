@@ -197,6 +197,7 @@ export function createServer(account: Account, timeZone: string, mediaEnabled = 
         name: overview.myName,
         time_zone: timeZone,
         last_error: overview.lastError,
+        recruitment_notifications: await account.recruitmentNotificationStatus(),
         archive: {
           ...counts,
           oldest: oldestMessageAt ? formatLocal(oldestMessageAt, timeZone) : null,
