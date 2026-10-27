@@ -29,6 +29,9 @@ type Subscription = {
   active: boolean
   generation: number
   verifyingUntil: number
+  verificationStatus?: number | null
+  verificationError?: string | null
+  unsubscribedAt?: number
 }
 export type ReferralPointer = {
   account: string
@@ -310,18 +313,24 @@ export class RecruitmentEvents {
         active: false,
         generation: (existing?.generation ?? 0) + 1,
         verifyingUntil: now + 15000,
+        verificationStatus: cached ? (existing?.verificationStatus ?? 200) : null,
+        verificationError: null,
       }
       s.subscriptions[id] = sub
       return structuredClone(sub)
     })
     if (!candidate.verified) {
       const challenge = crypto.randomUUID()
+      let verificationStatus: number | null = null
+      let failureReason = "network_error"
       try {
         const response = await this.post(
           candidate,
           "msg_verification_" + crypto.randomUUID(),
           JSON.stringify({ type: "verification", challenge }),
         )
+        verificationStatus = response.status
+        failureReason = response.ok ? "invalid_challenge_response" : "http_error"
         const reader = response.body?.getReader()
         if (!reader || !response.ok) {
           await response.body?.cancel()
@@ -344,9 +353,19 @@ export class RecruitmentEvents {
         const result = JSON.parse(new TextDecoder().decode(bytes))
         if (typeof result.challenge !== "string" || !equal(result.challenge, challenge))
           throw new Error()
-      } catch {
-        throw new EventError(-32015, "challenge_failed_or_timeout")
+      } catch (error) {
+        if (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name))
+          failureReason = "timeout"
+        this.mutate((s) => {
+          const current = s.subscriptions[id]
+          if (!current || current.generation !== candidate.generation) return
+          current.verifyingUntil = 0
+          current.verificationStatus = verificationStatus
+          current.verificationError = failureReason
+        })
+        throw new EventError(-32015, failureReason)
       }
+      candidate.verificationStatus = verificationStatus
     }
     if (!this.policy() || !(await this.deps.authorized(authority)))
       throw new EventError(-32001, "not_authorized")
@@ -357,6 +376,8 @@ export class RecruitmentEvents {
       current.active = true
       current.verifyingUntil = 0
       current.verified = this.now()
+      current.verificationStatus = candidate.verificationStatus ?? 200
+      current.verificationError = null
     })
     return { id, refreshBefore: new Date(expires).toISOString(), cursor: null, truncated: false }
   }
@@ -370,6 +391,7 @@ export class RecruitmentEvents {
         sub.verifyingUntil = 0
         sub.secret = ""
         sub.previousSecret = null
+        sub.unsubscribedAt = this.now()
       }
       for (const d of Object.values(s.deliveries))
         if (d.subscriptionId === id && (d.state === "pending" || d.state === "sending"))
@@ -555,6 +577,10 @@ export class RecruitmentEvents {
         id: x.id,
         active: x.active && x.expires > this.now() && !!p,
         expires_at: new Date(x.expires).toISOString(),
+        verified_at: x.verified ? new Date(x.verified).toISOString() : null,
+        verification_http_status: x.verificationStatus ?? null,
+        verification_error: x.verificationError ?? null,
+        unsubscribed_at: x.unsubscribedAt ? new Date(x.unsubscribedAt).toISOString() : null,
       })),
       delivery_counts: Object.fromEntries(
         ["pending", "sending", "accepted", "failed", "stopped"].map((k) => [

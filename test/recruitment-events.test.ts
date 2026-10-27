@@ -135,7 +135,7 @@ test("verification precedes activation; repeated subscribe is deterministic and 
 test("wrong callback challenge leaves delivery disabled", async () => {
   const f = fixture()
   f.badChallenge()
-  await expectFailure(f.service.subscribe(authority, params), "challenge_failed_or_timeout")
+  await expectFailure(f.service.subscribe(authority, params), "invalid_challenge_response")
   await f.service.enqueue(pointer)
   await f.service.flush()
   expect(f.calls).toHaveLength(1)
@@ -356,4 +356,35 @@ test("synthetic test is one-shot, marked test-only and cannot send to WhatsApp",
     message_id: null,
     request_key: "RC6:FIXTURE:20261027",
   })
+})
+
+test("callback diagnostics distinguish HTTP rejection and timeout without exposing endpoint or response", async () => {
+  for (const timeout of [false, true]) {
+    const f = fixture()
+    f.deps.transport = async () => {
+      if (timeout) throw new DOMException("private callback details", "TimeoutError")
+      return new Response("private callback details", { status: 403 })
+    }
+    const service = new RecruitmentEvents(f.storage, f.deps)
+    await expectFailure(service.subscribe(authority, params), timeout ? "timeout" : "http_error")
+    const sub = service.status().subscriptions[0]!
+    expect(sub.active).toBe(false)
+    expect(sub.verification_http_status).toBe(timeout ? null : 403)
+    expect(sub.verification_error).toBe(timeout ? "timeout" : "http_error")
+    const visible = JSON.stringify(service.status())
+    expect(visible).not.toContain(secret)
+    expect(visible).not.toContain(params.delivery.url)
+    expect(visible).not.toContain("private callback details")
+  }
+})
+
+test("status distinguishes successful verification followed by unsubscribe", async () => {
+  const f = fixture()
+  await f.service.subscribe(authority, params)
+  expect(f.service.status().subscriptions[0]!.verified_at).not.toBeNull()
+  await f.service.unsubscribe(authority, stop)
+  const sub = f.service.status().subscriptions[0]!
+  expect(sub.active).toBe(false)
+  expect(sub.verification_error).toBeNull()
+  expect(sub.unsubscribed_at).not.toBeNull()
 })
