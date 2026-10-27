@@ -108,7 +108,7 @@ function secretBytes(secret: unknown): Uint8Array {
   }
 }
 // This service only sends to the existing ChatGPT/Dot integration. Combined with
-// Workers' public fetch and redirect:error, callers cannot select local networks,
+// Workers' public fetch and manual redirects, callers cannot select local networks,
 // raw IPs, their own DNS names, proxy credentials, or redirect targets.
 export function callbackUrl(value: unknown): string {
   if (typeof value !== "string" || value.length > 2048) return fail("invalid_callback")
@@ -204,7 +204,8 @@ export class RecruitmentEvents {
     private readonly deps: Deps,
   ) {
     this.now = deps.now ?? (() => Date.now())
-    this.transport = deps.transport ?? fetch
+    // Worker globals reject calls with an unrelated class instance as `this`.
+    this.transport = deps.transport ?? ((url, init) => fetch(url, init))
   }
   private mutate<T>(fn: (state: State) => T): T {
     return this.storage.transactionSync(() => {
@@ -407,7 +408,9 @@ export class RecruitmentEvents {
       signature += " " + (await eventSignature(sub.previousSecret, id, timestamp, body))
     return this.transport(url, {
       method: "POST",
-      redirect: "error",
+      // workerd does not implement "error". Both callers reject non-2xx
+      // responses, so manual mode preserves the no-redirect boundary.
+      redirect: "manual",
       signal: AbortSignal.timeout(8000),
       headers: {
         "Content-Type": "application/json",
@@ -571,6 +574,7 @@ export class RecruitmentEvents {
   status() {
     const p = this.policy()
     return this.mutate((s) => ({
+      transport_revision: "worker-native-fetch-v1",
       intake_enabled: !!p,
       policy_expires_at: p ? new Date(p.expiresAt * 1000).toISOString() : null,
       subscriptions: Object.values(s.subscriptions).map((x) => ({
